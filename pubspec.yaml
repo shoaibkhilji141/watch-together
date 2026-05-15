@@ -1,0 +1,41 @@
+name: watch_together
+description: A new Flutter project.
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.1.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase dependencies (all compatible with 3.x core)
+  firebase_core: ^3.6.1
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.6.12
+  firebase_storage: ^12.3.4
+
+  # Other dependencies
+  video_player: ^2.9.2
+  file_picker: ^8.1.7
+  youtube_player_flutter: ^9.1.2
+  cupertino_icons: ^1.0.2
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.1
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icon.png"
+  min_sdk_android: 21
+
+flutter:
+  uses-material-design: true
