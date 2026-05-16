@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../services/room_presence_service.dart';
 import '../utils/app_palette.dart';
+import '../models/movie.dart';
 import '../widgets/video_player_widget.dart';
 import '../widgets/chat/chat_screen.dart';
 import 'movies_list_screen.dart';
@@ -15,10 +16,14 @@ class WatchScreen extends StatefulWidget {
   final String roomId;
   final String? roomName;
 
+  /// Movie just picked from catalog — play immediately while room doc syncs.
+  final Movie? initialMovie;
+
   const WatchScreen({
     super.key,
     required this.roomId,
     this.roomName,
+    this.initialMovie,
   });
 
   @override
@@ -181,9 +186,12 @@ class _WatchScreenState extends State<WatchScreen> {
             Expanded(
               flex: 2,
               child: VideoPlayerWidget(
-                key: ValueKey('video-${widget.roomId}'),
+                key: ValueKey(
+                  'video-${widget.roomId}-${widget.initialMovie?.id ?? ''}',
+                ),
                 roomId: widget.roomId,
                 isHost: _isHost,
+                initialMovie: widget.initialMovie,
               ),
             ),
             const _ChatDivider(),

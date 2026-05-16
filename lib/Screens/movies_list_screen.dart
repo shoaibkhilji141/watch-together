@@ -89,15 +89,16 @@ class _MoviesListScreenState extends State<MoviesListScreen> {
       await FirebaseFirestore.instance
           .collection('rooms')
           .doc(widget.roomId)
-          .update({
+          .set({
         'videoType': 'direct',
+        'movieId': movie.id,
         'videoUrl': movie.videoUrl,
         'movieTitle': movie.title,
         'movieImageUrl': movie.imageUrl,
         'videoSource': 'catalog',
         'isPlaying': false,
         'currentTime': 0,
-      });
+      }, SetOptions(merge: true));
 
       if (!mounted) return;
 
@@ -112,6 +113,7 @@ class _MoviesListScreenState extends State<MoviesListScreen> {
           builder: (_) => WatchScreen(
             roomId: widget.roomId,
             roomName: movie.title,
+            initialMovie: movie,
           ),
         ),
       );
