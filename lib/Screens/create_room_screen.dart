@@ -4,7 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'watch_screen.dart';
+import 'movies_list_screen.dart';
 
 class _Palette {
   final Color bg;
@@ -109,9 +109,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen>
         'currentTime': 0,
         'isPlaying': false,
         'videoType': 'direct',
-        'videoUrl':
-            'https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4',
-        'videoSource': 'network',
+        'videoUrl': '',
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -120,7 +118,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen>
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => WatchScreen(roomId: roomCode),
+          builder: (_) => MoviesListScreen(roomId: roomCode),
         ),
       );
     } on FirebaseException catch (e) {

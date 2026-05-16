@@ -1,63 +1,15 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/room_presence_service.dart';
+import '../utils/app_palette.dart';
 import '../widgets/video_player_widget.dart';
-import '../widgets/chat_widget.dart';
-import '../utils/youtube.dart';
-
-class _Palette {
-  final Color bg;
-  final Color surface;
-  final Color surfaceAlt;
-  final Color gold;
-  final Color goldLight;
-  final Color textPrimary;
-  final Color textSecondary;
-  final Color border;
-
-  const _Palette({
-    required this.bg,
-    required this.surface,
-    required this.surfaceAlt,
-    required this.gold,
-    required this.goldLight,
-    required this.textPrimary,
-    required this.textSecondary,
-    required this.border,
-  });
-
-  factory _Palette.of(BuildContext context) {
-    if (Theme.of(context).brightness == Brightness.light) {
-      return const _Palette(
-        bg: Color(0xFFF8F9FA),
-        surface: Color(0xFFFFFFFF),
-        surfaceAlt: Color(0xFFE9ECEF),
-        gold: Color(0xFFCBA869),
-        goldLight: Color(0xFFE8C98A),
-        textPrimary: Color(0xFF1A1D20),
-        textSecondary: Color(0xFF495057),
-        border: Color(0xFFDEE2E6),
-      );
-    }
-    return const _Palette(
-      bg: Color(0xFF0D0F14),
-      surface: Color(0xFF161A23),
-      surfaceAlt: Color(0xFF1C2130),
-      gold: Color(0xFFCBA869),
-      goldLight: Color(0xFFE8C98A),
-      textPrimary: Color(0xFFF0EDE6),
-      textSecondary: Color(0xFF8A8FA0),
-      border: Color(0xFF2A2F3E),
-    );
-  }
-}
+import '../widgets/chat/chat_screen.dart';
+import 'movies_list_screen.dart';
 
 class WatchScreen extends StatefulWidget {
   final String roomId;
@@ -75,6 +27,89 @@ class WatchScreen extends StatefulWidget {
 
 class _WatchScreenState extends State<WatchScreen> {
   bool _codeCopied = false;
+  final _presence = RoomPresenceService();
+  Timer? _heartbeatTimer;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _roomMetaSub;
+
+  bool _roomLoaded = false;
+  bool _roomExists = false;
+  String _title = '';
+  bool _isHost = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenRoomMeta();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _registerPresence());
+  }
+
+  void _listenRoomMeta() {
+    _roomMetaSub = FirebaseFirestore.instance
+        .collection('rooms')
+        .doc(widget.roomId)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+
+      if (!snapshot.exists) {
+        if (!_roomLoaded || _roomExists) {
+          setState(() {
+            _roomLoaded = true;
+            _roomExists = false;
+          });
+        }
+        return;
+      }
+
+      final data = snapshot.data()!;
+      final hostId = data['hostId'] as String?;
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final newIsHost = uid != null && uid == hostId;
+      final newTitle = widget.roomName ??
+          (data['movieTitle'] as String?) ??
+          'Room ${widget.roomId}';
+
+      if (!_roomLoaded ||
+          !_roomExists ||
+          newIsHost != _isHost ||
+          newTitle != _title) {
+        setState(() {
+          _roomLoaded = true;
+          _roomExists = true;
+          _isHost = newIsHost;
+          _title = newTitle;
+        });
+      }
+    });
+  }
+
+  Future<void> _registerPresence() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final roomDoc = await FirebaseFirestore.instance
+        .collection('rooms')
+        .doc(widget.roomId)
+        .get();
+    if (!roomDoc.exists || !mounted) return;
+
+    final hostId = roomDoc.data()?['hostId'] as String?;
+    final isHost = hostId == user.uid;
+
+    await _presence.joinRoom(roomId: widget.roomId, isHost: isHost);
+
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _presence.heartbeat(widget.roomId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _heartbeatTimer?.cancel();
+    _roomMetaSub?.cancel();
+    _presence.leaveRoom(widget.roomId);
+    super.dispose();
+  }
 
   Future<void> _copyRoomCode() async {
     await Clipboard.setData(ClipboardData(text: widget.roomId));
@@ -83,370 +118,99 @@ class _WatchScreenState extends State<WatchScreen> {
     if (mounted) setState(() => _codeCopied = false);
   }
 
-  Future<void> _setVideoUrlForRoom({
-    required String roomId,
-    required String url,
-    required String source,
-  }) async {
-    final ytId = extractYouTubeVideoId(url);
-    if (ytId != null) {
-      await FirebaseFirestore.instance.collection('rooms').doc(roomId).update({
-        'videoType': 'youtube',
-        'youtubeId': ytId,
-        'videoUrl': url,
-        'videoSource': source,
-        'isPlaying': false,
-        'currentTime': 0,
-      });
-      return;
-    }
-
-    await FirebaseFirestore.instance.collection('rooms').doc(roomId).update({
-      'videoType': 'direct',
-      'youtubeId': FieldValue.delete(),
-      'videoUrl': url,
-      'videoSource': source,
-      'isPlaying': false,
-      'currentTime': 0,
-    });
-  }
-
-  Future<void> _showChangeVideoSheet(String roomId) async {
-    final urlController = TextEditingController();
-    final p = _Palette.of(context);
-
-    await showModalBottomSheet(
-      context: context,
-      backgroundColor: p.bg,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.movie_creation_outlined,
-                      color: p.gold, size: 20),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Choose video source',
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: p.textPrimary,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(Icons.close_rounded,
-                        color: p.textSecondary, size: 18),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: urlController,
-                style: TextStyle(color: p.textPrimary, fontSize: 13.5),
-                decoration: InputDecoration(
-                  labelText: 'Network video URL',
-                  labelStyle: TextStyle(
-                    color: p.textSecondary,
-                    fontSize: 13,
-                  ),
-                  hintText: 'https://example.com/video.mp4',
-                  hintStyle: TextStyle(
-                    color: p.textSecondary,
-                    fontSize: 12.5,
-                  ),
-                  filled: true,
-                  fillColor: p.surface,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: p.border),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: p.border),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: p.gold),
-                  ),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                ),
-              ),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: p.gold,
-                        foregroundColor: p.bg,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                      ),
-                      onPressed: () async {
-                        final url = urlController.text.trim();
-                        if (url.isEmpty) return;
-                        Navigator.pop(context);
-                        await _setVideoUrlForRoom(
-                          roomId: roomId,
-                          url: url,
-                          source: 'network',
-                        );
-                      },
-                      icon: const Icon(Icons.link_rounded, size: 18),
-                      label: const Text(
-                        'Use URL',
-                        style: TextStyle(
-                          fontFamily: 'Georgia',
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        side: BorderSide(color: p.border),
-                        foregroundColor: p.textPrimary,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                      ),
-                      onPressed: () async {
-                        Navigator.pop(context);
-                        await _pickLocalVideoAndUpload(roomId);
-                      },
-                      icon: const Icon(Icons.folder_open_rounded, size: 18),
-                      label: const Text(
-                        'From device',
-                        style: TextStyle(
-                          fontFamily: 'Georgia',
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _pickLocalVideoAndUpload(String roomId) async {
-    try {
-      final result = await FilePicker.platform.pickFiles(type: FileType.video);
-      if (result == null) return;
-      final name = result.files.single.name;
-
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('room_videos')
-          .child('$roomId-${DateTime.now().millisecondsSinceEpoch}-$name');
-
-      final metadata = SettableMetadata(contentType: 'video/mp4');
-
-      if (kIsWeb) {
-        final bytes = result.files.single.bytes;
-        if (bytes == null) return;
-        await ref.putData(bytes, metadata);
-      } else {
-        final path = result.files.single.path;
-        if (path == null) return;
-        await ref.putFile(File(path), metadata);
-      }
-      final url = await ref.getDownloadURL();
-
-      await _setVideoUrlForRoom(
-        roomId: roomId,
-        url: url,
-        source: 'storage',
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to upload video. Please try again.'),
+  void _openMovieCatalog() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MoviesListScreen(
+          roomId: widget.roomId,
+          pickOnly: true,
         ),
-      );
-    }
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final p = AppPalette.of(context);
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('rooms')
-          .doc(widget.roomId)
-          .snapshots(),
-      builder: (context, snapshot) {
-        // ── Loading ──────────────────────────────────────────────
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Scaffold(
-            backgroundColor: p.bg,
-            body: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: p.surface,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: p.border),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(p.gold),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    "Joining room…",
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 15,
-                      color: p.textSecondary,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
+    if (!_roomLoaded) {
+      return Scaffold(
+        backgroundColor: p.bg,
+        body: Center(
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            valueColor: AlwaysStoppedAnimation<Color>(p.gold),
+          ),
+        ),
+      );
+    }
 
-        // ── Room not found ───────────────────────────────────────
-        if (!snapshot.hasData || !snapshot.data!.exists) {
-          return Scaffold(
-            backgroundColor: p.bg,
-            body: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 64,
-                    height: 64,
-                    decoration: BoxDecoration(
-                      color: p.surface,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: p.border),
-                    ),
-                    child: Icon(
-                      Icons.meeting_room_outlined,
-                      color: p.textSecondary,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    "Room not found",
-                    style: TextStyle(
-                      fontFamily: 'Georgia',
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: p.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    "This room may have ended or never existed.",
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      color: p.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
-
-        final data = snapshot.data!.data()!;
-        final hostId = data['hostId'] as String?;
-        final isHost = currentUser != null && currentUser.uid == hostId;
-        final title = widget.roomName ?? 'Room ${widget.roomId}';
-
-        return Scaffold(
-          backgroundColor: p.bg,
-          body: SafeArea(
-            child: Column(
-              children: [
-                // ── Top bar ────────────────────────────────────
-                _TopBar(
-                  title: title,
-                  roomId: widget.roomId,
-                  isHost: isHost,
-                  codeCopied: _codeCopied,
-                  onCopy: _copyRoomCode,
-                  onChangeVideo: isHost
-                      ? () => _showChangeVideoSheet(widget.roomId)
-                      : null,
-                ),
-
-                // ── Divider ────────────────────────────────────
-                Container(height: 1, color: p.border),
-
-                // ── Video player ───────────────────────────────
-                Expanded(
-                  flex: 2,
-                  child: VideoPlayerWidget(
-                    roomId: widget.roomId,
-                    isHost: isHost,
-                  ),
-                ),
-
-                // ── Chat divider ───────────────────────────────
-                const _ChatDivider(),
-
-                // ── Chat ───────────────────────────────────────
-                Expanded(
-                  flex: 3,
-                  child: ChatWidget(roomId: widget.roomId),
-                ),
-              ],
+    if (!_roomExists) {
+      return Scaffold(
+        backgroundColor: p.bg,
+        body: Center(
+          child: Text(
+            'Room not found',
+            style: TextStyle(
+              fontFamily: 'Georgia',
+              fontSize: 18,
+              color: p.textPrimary,
             ),
           ),
-        );
-      },
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: p.bg,
+      body: SafeArea(
+        child: Column(
+          children: [
+            _TopBar(
+              title: _title,
+              roomId: widget.roomId,
+              isHost: _isHost,
+              codeCopied: _codeCopied,
+              onCopy: _copyRoomCode,
+              onChangeMovie: _isHost ? _openMovieCatalog : null,
+              viewerCountStream:
+                  _isHost ? _presence.activeViewerCount(widget.roomId) : null,
+            ),
+            Container(height: 1, color: p.border),
+            Expanded(
+              flex: 2,
+              child: VideoPlayerWidget(
+                key: ValueKey('video-${widget.roomId}'),
+                roomId: widget.roomId,
+                isHost: _isHost,
+              ),
+            ),
+            const _ChatDivider(),
+            Expanded(
+              flex: 3,
+              child: RepaintBoundary(
+                child: ChatScreen(
+                  key: ValueKey('chat-${widget.roomId}'),
+                  roomId: widget.roomId,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
-// ── Top Bar ────────────────────────────────────────────────────────────────────
 class _TopBar extends StatelessWidget {
   final String title;
   final String roomId;
   final bool isHost;
   final bool codeCopied;
   final VoidCallback onCopy;
-  final VoidCallback? onChangeVideo;
+  final VoidCallback? onChangeMovie;
+  final Stream<int>? viewerCountStream;
 
   const _TopBar({
     required this.title,
@@ -454,179 +218,85 @@ class _TopBar extends StatelessWidget {
     required this.isHost,
     required this.codeCopied,
     required this.onCopy,
-    this.onChangeVideo,
+    this.onChangeMovie,
+    this.viewerCountStream,
   });
 
   @override
   Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    
+    final p = AppPalette.of(context);
+
     return Container(
       color: p.bg,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Back button
-          GestureDetector(
-            onTap: () => Navigator.pop(context),
-            child: Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: p.surface,
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: p.border),
-              ),
-              child: Icon(
-                Icons.arrow_back_ios_new_rounded,
-                color: p.textSecondary,
-                size: 12,
-              ),
-            ),
-          ),
-
-          const SizedBox(width: 8),
-
-          // Logo mark
-          Container(
-            width: 26,
-            height: 26,
-            decoration: BoxDecoration(
-              color: p.gold,
-              borderRadius: BorderRadius.circular(7),
-            ),
-            child: Icon(Icons.play_arrow_rounded, color: p.bg, size: 15),
-          ),
-
-          const SizedBox(width: 7),
-
-          // Title — Flexible lets it shrink when chips need space
-          Flexible(
-            child: Text(
-              title,
-              style: TextStyle(
-                fontFamily: 'Georgia',
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: p.textPrimary,
-                letterSpacing: 0.2,
-              ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-          ),
-
-          const SizedBox(width: 6),
-
-          // Room code chip (tap to copy) — max-width cap prevents overflow
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 105),
-            child: GestureDetector(
-              onTap: onCopy,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: codeCopied ? p.gold.withValues(alpha: 0.15) : p.surfaceAlt,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color: codeCopied ? p.gold.withValues(alpha: 0.5) : p.border,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      codeCopied ? Icons.check_rounded : Icons.tag_rounded,
-                      size: 11,
-                      color: codeCopied ? p.gold : p.textSecondary,
-                    ),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        codeCopied ? 'Copied!' : roomId,
-                        style: TextStyle(
-                          fontFamily: 'Georgia',
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: codeCopied ? p.gold : p.textPrimary,
-                          letterSpacing: codeCopied ? 0.2 : 1.8,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(width: 5),
-
-          // Host / Viewer + change video (host only)
           Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: isHost ? p.gold.withValues(alpha: 0.12) : p.surfaceAlt,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color: isHost ? p.gold.withValues(alpha: 0.35) : p.border,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      isHost
-                          ? Icons.star_rounded
-                          : Icons.person_outline_rounded,
-                      size: 11,
-                      color: isHost ? p.gold : p.textSecondary,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      isHost ? 'Host' : 'Viewer',
-                      style: TextStyle(
-                        fontFamily: 'Georgia',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: isHost ? p.gold : p.textSecondary,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ],
+              _TopBarIconButton(
+                onTap: () => Navigator.pop(context),
+                child: Icon(
+                  Icons.arrow_back_ios_new_rounded,
+                  color: p.textSecondary,
+                  size: 12,
                 ),
               ),
-              if (isHost && onChangeVideo != null) ...[
-                const SizedBox(width: 5),
-                // Icon-only: saves ~80px vs text button, tooltip on long-press
-                Tooltip(
-                  message: 'Change video',
-                  child: GestureDetector(
-                    onTap: onChangeVideo,
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: p.surfaceAlt,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: p.border),
-                      ),
-                      child: Icon(
-                        Icons.video_library_rounded,
-                        size: 15,
-                        color: p.gold,
-                      ),
-                    ),
-                  ),
+              const SizedBox(width: 8),
+              Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: p.gold,
+                  borderRadius: BorderRadius.circular(7),
                 ),
-              ],
+                child: Icon(Icons.play_arrow_rounded, color: p.bg, size: 15),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: p.textPrimary,
+                    letterSpacing: 0.2,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+              if (isHost && onChangeMovie != null)
+                _TopBarIconButton(
+                  onTap: onChangeMovie!,
+                  child: Icon(Icons.movie_outlined, size: 15, color: p.gold),
+                ),
             ],
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _RoomCodeChip(
+                  palette: p,
+                  roomId: roomId,
+                  codeCopied: codeCopied,
+                  onCopy: onCopy,
+                ),
+                const SizedBox(width: 6),
+                _RoleChip(palette: p, isHost: isHost),
+                if (isHost && viewerCountStream != null) ...[
+                  const SizedBox(width: 6),
+                  _ViewerCountChip(
+                    palette: p,
+                    stream: viewerCountStream!,
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -634,14 +304,184 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-// ── Chat section divider ───────────────────────────────────────────────────────
+class _TopBarIconButton extends StatelessWidget {
+  final VoidCallback onTap;
+  final Widget child;
+
+  const _TopBarIconButton({required this.onTap, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = AppPalette.of(context);
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: p.surface,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: p.border),
+        ),
+        child: Center(child: child),
+      ),
+    );
+  }
+}
+
+class _RoomCodeChip extends StatelessWidget {
+  final AppPalette palette;
+  final String roomId;
+  final bool codeCopied;
+  final VoidCallback onCopy;
+
+  const _RoomCodeChip({
+    required this.palette,
+    required this.roomId,
+    required this.codeCopied,
+    required this.onCopy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onCopy,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: codeCopied
+              ? palette.gold.withValues(alpha: 0.15)
+              : palette.surfaceAlt,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(
+            color: codeCopied
+                ? palette.gold.withValues(alpha: 0.5)
+                : palette.border,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              codeCopied ? Icons.check_rounded : Icons.tag_rounded,
+              size: 11,
+              color: codeCopied ? palette.gold : palette.textSecondary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              codeCopied ? 'Copied!' : roomId,
+              style: TextStyle(
+                fontFamily: 'Georgia',
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: codeCopied ? palette.gold : palette.textPrimary,
+                letterSpacing: codeCopied ? 0.2 : 1.8,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoleChip extends StatelessWidget {
+  final AppPalette palette;
+  final bool isHost;
+
+  const _RoleChip({required this.palette, required this.isHost});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: isHost
+            ? palette.gold.withValues(alpha: 0.12)
+            : palette.surfaceAlt,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(
+          color: isHost
+              ? palette.gold.withValues(alpha: 0.35)
+              : palette.border,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isHost ? Icons.star_rounded : Icons.person_outline_rounded,
+            size: 11,
+            color: isHost ? palette.gold : palette.textSecondary,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            isHost ? 'Host' : 'Viewer',
+            style: TextStyle(
+              fontFamily: 'Georgia',
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: isHost ? palette.gold : palette.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ViewerCountChip extends StatelessWidget {
+  final AppPalette palette;
+  final Stream<int> stream;
+
+  const _ViewerCountChip({required this.palette, required this.stream});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<int>(
+      stream: stream,
+      builder: (context, snap) {
+        final count = snap.data ?? 0;
+        return Tooltip(
+          message: count == 1 ? '1 viewer watching' : '$count viewers watching',
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+              color: palette.gold.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(color: palette.gold.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.people_outline_rounded, size: 12, color: palette.gold),
+                const SizedBox(width: 4),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: palette.gold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _ChatDivider extends StatelessWidget {
   const _ChatDivider();
 
   @override
   Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    
+    final p = AppPalette.of(context);
+
     return Container(
       color: p.surface,
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
@@ -651,7 +491,7 @@ class _ChatDivider extends StatelessWidget {
               color: p.textSecondary, size: 15),
           const SizedBox(width: 8),
           Text(
-            "Live Chat",
+            'Live Chat',
             style: TextStyle(
               fontFamily: 'Georgia',
               fontSize: 13,
@@ -661,7 +501,6 @@ class _ChatDivider extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          // Live dot
           Container(
             width: 6,
             height: 6,
