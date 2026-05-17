@@ -76,6 +76,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _ownsPlayer = true;
   bool _openingMedia = false;
 
+  /// Prevents stale async room handlers from overwriting newer state.
+  int _roomEventGeneration = 0;
+  Timer? _viewerCatchUpTimer;
+
   late final DocumentReference<Map<String, dynamic>> _roomRef;
   final MoviesService _moviesService = MoviesService();
   Duration _pendingRemotePosition = Duration.zero;
@@ -118,6 +122,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _uiState.value = _uiState.value.copyWith(isHost: widget.isHost);
     _listenToRoom();
     _listenToMessages();
+    unawaited(_bootstrapRoomDocument());
 
     final initial = widget.initialMovie;
     if (initial != null && initial.hasPlayableVideo) {
@@ -127,6 +132,53 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _refreshUi();
   }
 
+  bool _isStaleRoomEvent(int generation) =>
+      !mounted || generation != _roomEventGeneration;
+
+  bool _roomHasMovieMeta(Map<String, dynamic> data) {
+    final title = (data['movieTitle'] as String?)?.trim();
+    final id = (data['movieId'] as String?)?.trim();
+    final url = (data['videoUrl'] as String?)?.trim();
+    return (title != null && title.isNotEmpty) ||
+        (id != null && id.isNotEmpty) ||
+        (url != null && url.isNotEmpty);
+  }
+
+  Future<void> _bootstrapRoomDocument() async {
+    try {
+      final snap = await _roomRef.get();
+      if (!mounted || !snap.exists) return;
+      await _onRoomSnapshot(snap, _roomEventGeneration);
+    } catch (_) {
+      if (!widget.isHost) _scheduleViewerCatchUp();
+    }
+  }
+
+  void _scheduleViewerCatchUp() {
+    if (widget.isHost) return;
+    _viewerCatchUpTimer?.cancel();
+    _viewerCatchUpTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      if (_currentVideoUrl != null && _currentVideoUrl!.isNotEmpty) return;
+      unawaited(_bootstrapRoomDocument());
+    });
+  }
+
+  Future<void> _syncMovieToRoom(Movie movie) async {
+    try {
+      await _roomRef.set({
+        'videoType': 'direct',
+        'movieId': movie.id,
+        'videoUrl': movie.videoUrl,
+        'movieTitle': movie.title,
+        'movieImageUrl': movie.imageUrl,
+        'videoSource': 'catalog',
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // Firestore may reject; viewer catch-up will retry reads.
+    }
+  }
+
   void _applySelectedMovie(Movie movie) {
     _waitingForMovie = false;
     _movieId = movie.id;
@@ -134,6 +186,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _movieImageUrl = movie.imageUrl.isNotEmpty ? movie.imageUrl : null;
     _errorMessage = null;
     _refreshUi();
+    if (widget.isHost) {
+      unawaited(_syncMovieToRoom(movie));
+    }
     unawaited(_openMediaIfNeeded(movie.videoUrl));
   }
 
@@ -141,10 +196,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (_resolvingMovie || movieId.trim().isEmpty) return;
     _resolvingMovie = true;
     try {
-      final movie = await _moviesService.getMovieById(movieId);
-      if (!mounted || movie == null || !movie.hasPlayableVideo) return;
-
       _waitingForMovie = false;
+      _refreshUi();
+
+      final movie = await _moviesService.getMovieById(movieId);
+      if (!mounted || movie == null || !movie.hasPlayableVideo) {
+        _scheduleViewerCatchUp();
+        return;
+      }
+
       _movieId = movie.id;
       _movieTitle = movie.title;
       _movieImageUrl = movie.imageUrl.isNotEmpty ? movie.imageUrl : null;
@@ -155,14 +215,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       }
 
       if (widget.isHost) {
-        await _roomRef.set({
-          'movieId': movie.id,
-          'videoUrl': movie.videoUrl,
-          'movieTitle': movie.title,
-          'movieImageUrl': movie.imageUrl,
-          'videoType': 'direct',
-          'videoSource': 'catalog',
-        }, SetOptions(merge: true));
+        await _syncMovieToRoom(movie);
       }
     } finally {
       _resolvingMovie = false;
@@ -173,7 +226,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (!mounted) return;
 
     final hasUrl = _currentVideoUrl != null && _currentVideoUrl!.isNotEmpty;
-    final preparing = hasUrl && !_initialized && _errorMessage == null;
+    final hasMovieMeta = (_movieTitle != null && _movieTitle!.isNotEmpty) ||
+        (_movieId != null && _movieId!.isNotEmpty);
+    final preparing = !_initialized &&
+        _errorMessage == null &&
+        !_waitingForMovie &&
+        (hasUrl || hasMovieMeta);
     final progress = _duration.inMilliseconds == 0
         ? 0.0
         : _position.inMilliseconds / _duration.inMilliseconds;
@@ -181,6 +239,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     String loadingMessage = 'Preparing your video…';
     if (_isReconnecting) {
       loadingMessage = 'Almost there — reconnecting…';
+    } else if (preparing && !widget.isHost && hasMovieMeta) {
+      loadingMessage = 'Joining playback…';
     } else if (preparing && _movieImageUrl != null) {
       loadingMessage = 'Loading video…';
     }
@@ -235,75 +295,98 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   void _listenToRoom() {
-    _roomSub = _roomRef.snapshots().listen((snapshot) async {
-      final data = snapshot.data();
-      if (data == null) return;
+    _roomSub = _roomRef.snapshots().listen((snapshot) {
+      final gen = ++_roomEventGeneration;
+      unawaited(_onRoomSnapshot(snapshot, gen));
+    });
+  }
 
-      final videoUrl = (data['videoUrl'] as String?)?.trim();
-      final movieTitle = data['movieTitle'] as String?;
-      final movieImageUrl = data['movieImageUrl'] as String?;
-      final movieId = (data['movieId'] as String?)?.trim();
+  Future<void> _onRoomSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> snapshot,
+    int generation,
+  ) async {
+    if (_isStaleRoomEvent(generation)) return;
 
-      if (mounted) {
-        var changed = false;
-        if (movieTitle != _movieTitle) {
-          _movieTitle = movieTitle;
-          changed = true;
-        }
-        if (movieImageUrl != _movieImageUrl) {
-          _movieImageUrl = movieImageUrl;
-          changed = true;
-        }
-        if (movieId != _movieId) {
-          _movieId = movieId;
-          changed = true;
-        }
-        if (changed) _refreshUi();
+    final data = snapshot.data();
+    if (data == null) return;
+
+    final videoUrl = (data['videoUrl'] as String?)?.trim();
+    final movieTitle = data['movieTitle'] as String?;
+    final movieImageUrl = data['movieImageUrl'] as String?;
+    final movieId = (data['movieId'] as String?)?.trim();
+    final hasMovieMeta = _roomHasMovieMeta(data);
+
+    if (!_isStaleRoomEvent(generation)) {
+      var changed = false;
+      if (movieTitle != _movieTitle) {
+        _movieTitle = movieTitle;
+        changed = true;
+      }
+      if (movieImageUrl != _movieImageUrl) {
+        _movieImageUrl = movieImageUrl;
+        changed = true;
+      }
+      if (movieId != _movieId) {
+        _movieId = movieId;
+        changed = true;
+      }
+      if (changed) _refreshUi();
+    }
+
+    final hasPlayableUrl = videoUrl != null && videoUrl.isNotEmpty;
+
+    if (!hasPlayableUrl) {
+      if (movieId != null && movieId.isNotEmpty) {
+        await _resolveMovieFromCatalog(movieId);
+        if (!_isStaleRoomEvent(generation)) _scheduleViewerCatchUp();
+        return;
       }
 
-      final hasPlayableUrl = videoUrl != null && videoUrl.isNotEmpty;
-
-      if (!hasPlayableUrl) {
-        if (movieId != null && movieId.isNotEmpty) {
-          await _resolveMovieFromCatalog(movieId);
-          return;
-        }
-        if (_currentVideoUrl == null || _currentVideoUrl!.isEmpty) {
-          if (mounted) {
+      if (_currentVideoUrl == null || _currentVideoUrl!.isEmpty) {
+        if (!_isStaleRoomEvent(generation)) {
+          if (hasMovieMeta) {
+            // Host picked a movie; viewer is loading (not idle).
+            _waitingForMovie = false;
+            _refreshUi();
+            _scheduleViewerCatchUp();
+          } else {
             _waitingForMovie = true;
             _initialized = false;
             _videoRevealed = false;
             _refreshUi();
           }
         }
-        return;
       }
+      return;
+    }
 
-      if (mounted) {
-        _waitingForMovie = false;
-        _refreshUi();
+    if (_isStaleRoomEvent(generation)) return;
+
+    _waitingForMovie = false;
+    _viewerCatchUpTimer?.cancel();
+    _refreshUi();
+    await _openMediaIfNeeded(videoUrl);
+
+    if (_isStaleRoomEvent(generation)) return;
+
+    final isPlaying = (data['isPlaying'] as bool?) ?? false;
+    final currentTimeMs = (data['currentTime'] as int?) ?? 0;
+    final position = Duration(milliseconds: currentTimeMs);
+
+    if (!_initialized) {
+      _pendingRemotePlaying = isPlaying;
+      _pendingRemotePosition = position;
+      return;
+    }
+
+    if (!widget.isHost && _player != null) {
+      if (isPlaying != _isPlaying) {
+        isPlaying ? _player!.play() : _player!.pause();
       }
-      await _openMediaIfNeeded(videoUrl);
-
-      final isPlaying = (data['isPlaying'] as bool?) ?? false;
-      final currentTimeMs = (data['currentTime'] as int?) ?? 0;
-      final position = Duration(milliseconds: currentTimeMs);
-
-      if (!_initialized) {
-        _pendingRemotePlaying = isPlaying;
-        _pendingRemotePosition = position;
-        return;
-      }
-
-      if (!widget.isHost && _player != null) {
-        if (isPlaying != _isPlaying) {
-          isPlaying ? _player!.play() : _player!.pause();
-        }
-        final diffMs =
-            (position.inMilliseconds - _position.inMilliseconds).abs();
-        if (diffMs > 1000) await _player!.seek(position);
-      }
-    });
+      final diffMs =
+          (position.inMilliseconds - _position.inMilliseconds).abs();
+      if (diffMs > 1000) await _player!.seek(position);
+    }
   }
 
   void _listenToMessages() {
@@ -535,6 +618,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void dispose() {
     _uiState.dispose();
+    _viewerCatchUpTimer?.cancel();
     _hideControlsTimer?.cancel();
     _syncTimer?.cancel();
     _roomSub?.cancel();
@@ -614,6 +698,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 color: _textPrimary,
               ),
             ),
+            if (!widget.isHost) ...[
+              const SizedBox(height: 8),
+              Text(
+                'The host will pick a movie from the catalog',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: _textSecondary),
+              ),
+            ],
           ],
         ),
       ),
@@ -948,6 +1040,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (widget.initialMovie != null && widget.initialMovie!.hasPlayableVideo) {
       return false;
     }
+    if (_movieId != null && _movieId!.isNotEmpty) return false;
+    if (_movieTitle != null && _movieTitle!.isNotEmpty) return false;
     return _waitingForMovie;
   }
 
