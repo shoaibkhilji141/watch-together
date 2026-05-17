@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:media_kit/media_kit.dart';
-import 'Screens/auth/login_screen.dart';
+import 'Screens/auth/auth_gate.dart';
 import 'utils/theme_notifier.dart';
 import 'utils/app_theme.dart';
 
@@ -56,7 +56,7 @@ class _MyAppState extends State<MyApp> {
         theme: AppTheme.light,
         darkTheme: AppTheme.dark,
         themeMode: widget.themeNotifier.themeMode,
-        home: const LoginScreen(),
+        home: const AuthGate(),
       ),
     );
   }

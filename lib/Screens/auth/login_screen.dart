@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../screens/home_screen.dart';
+import '../../Screens/home_screen.dart';
+import '../../services/auth_preferences.dart';
 import 'auth_service.dart';
 import 'signup_screen.dart';
 
@@ -17,6 +18,7 @@ class _LoginScreenState extends State<LoginScreen>
 
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _staySignedIn = true;
 
   late AnimationController _animController;
   late Animation<double> _fadeAnim;
@@ -64,6 +66,12 @@ class _LoginScreenState extends State<LoginScreen>
       curve: Curves.easeOut,
     ));
     _animController.forward();
+    _loadStaySignedInPreference();
+  }
+
+  Future<void> _loadStaySignedInPreference() async {
+    final value = await AuthPreferences.getStaySignedIn();
+    if (mounted) setState(() => _staySignedIn = value);
   }
 
   @override
@@ -92,6 +100,7 @@ class _LoginScreenState extends State<LoginScreen>
     setState(() => _isLoading = false);
 
     if (res == "Login Successful") {
+      await AuthPreferences.setStaySignedIn(_staySignedIn);
       await _showDialog("Welcome back.", "You have signed in successfully.");
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -385,7 +394,20 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
 
-                            const SizedBox(height: 28),
+                            const SizedBox(height: 20),
+
+                            _StaySignedInRow(
+                              value: _staySignedIn,
+                              onChanged: (v) =>
+                                  setState(() => _staySignedIn = v),
+                              gold: _gold,
+                              textPrimary: _textPrimary,
+                              textSecondary: _textSecondary,
+                              border: _border,
+                              surfaceAlt: _surfaceAlt,
+                            ),
+
+                            const SizedBox(height: 24),
 
                             // Sign In Button
                             SizedBox(
@@ -531,6 +553,81 @@ class _LoginScreenState extends State<LoginScreen>
 }
 
 // ── Helper Widgets ─────────────────────────────────────────────────────────────
+
+class _StaySignedInRow extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final Color gold;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color border;
+  final Color surfaceAlt;
+
+  const _StaySignedInRow({
+    required this.value,
+    required this.onChanged,
+    required this.gold,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.border,
+    required this.surfaceAlt,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: value ? gold.withValues(alpha: 0.15) : surfaceAlt,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: value ? gold : border,
+                    width: value ? 1.5 : 1,
+                  ),
+                ),
+                child: value
+                    ? Icon(Icons.check_rounded, size: 16, color: gold)
+                    : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Stay signed in',
+                  style: TextStyle(
+                    fontFamily: 'Georgia',
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: textPrimary,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+              Text(
+                'Skip login next time',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: textSecondary,
+                  letterSpacing: 0.15,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _FieldLabel extends StatelessWidget {
   final String label;
