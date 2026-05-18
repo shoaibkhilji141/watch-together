@@ -180,9 +180,20 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
+  Widget _verticalGap({required bool keyboardOpen, required int flex}) {
+    if (keyboardOpen) return SizedBox(height: flex >= 2 ? 12 : 8);
+    return Spacer(flex: flex);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    final keyboardOpen = viewInsets.bottom > 0;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final safePadding = MediaQuery.paddingOf(context);
+
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       backgroundColor: _bg,
       body: Stack(
         children: [
@@ -222,106 +233,121 @@ class _LoginScreenState extends State<LoginScreen>
             ),
           ),
 
-          // ── Main content ───────────────────────────────────────
+          // ── Main content: fixed when idle, scrolls when keyboard open ──
           SafeArea(
             child: FadeTransition(
               opacity: _fadeAnim,
               child: SlideTransition(
                 position: _slideAnim,
                 child: SingleChildScrollView(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 30),
-
-                      // ── Logo / Wordmark ──────────────────────
-                      Row(
+                  physics: keyboardOpen
+                      ? const ClampingScrollPhysics()
+                      : const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.fromLTRB(
+                    28,
+                    16,
+                    28,
+                    20 + viewInsets.bottom,
+                  ),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: screenHeight -
+                          safePadding.top -
+                          safePadding.bottom -
+                          viewInsets.bottom -
+                          36,
+                    ),
+                    child: IntrinsicHeight(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: _gold,
-                              borderRadius: BorderRadius.circular(10),
+                          if (!keyboardOpen)
+                            Row(
+                              children: [
+                                Container(
+                                  width: 38,
+                                  height: 38,
+                                  decoration: BoxDecoration(
+                                    color: _gold,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Icon(
+                                    Icons.play_arrow_rounded,
+                                    color: _bg,
+                                    size: 22,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  "WatchTogether",
+                                  style: TextStyle(
+                                    fontFamily: 'Georgia',
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w600,
+                                    color: _textPrimary,
+                                    letterSpacing: 0.6,
+                                  ),
+                                ),
+                              ],
                             ),
-                            child: Icon(
-                              Icons.play_arrow_rounded,
-                              color: _bg,
-                              size: 22,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
+
+                          _verticalGap(keyboardOpen: keyboardOpen, flex: 2),
+
                           Text(
-                            "WatchTogether",
+                            "Welcome\nback.",
                             style: TextStyle(
                               fontFamily: 'Georgia',
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
+                              fontSize: keyboardOpen ? 28 : 40,
+                              fontWeight: FontWeight.w700,
                               color: _textPrimary,
-                              letterSpacing: 0.6,
+                              height: 1.15,
+                              letterSpacing: -0.5,
                             ),
                           ),
-                        ],
-                      ),
+                          SizedBox(height: keyboardOpen ? 6 : 10),
 
-                      const SizedBox(height: 64),
-
-                      // ── Heading ──────────────────────────────
-                      Text(
-                        "Welcome\nback.",
-                        style: TextStyle(
-                          fontFamily: 'Georgia',
-                          fontSize: 40,
-                          fontWeight: FontWeight.w700,
-                          color: _textPrimary,
-                          height: 1.15,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-
-                      // Gold underline accent
-                      Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 2.5,
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [_gold, _goldLight],
+                          if (!keyboardOpen)
+                            Row(
+                              children: [
+                                Container(
+                                  width: 48,
+                                  height: 2.5,
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [_gold, _goldLight],
+                                    ),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  width: 8,
+                                  height: 2.5,
+                                  decoration: BoxDecoration(
+                                    color: _gold.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          if (!keyboardOpen) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              "Sign in to continue your experience.",
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: _textSecondary,
+                                letterSpacing: 0.2,
+                                height: 1.5,
                               ),
-                              borderRadius: BorderRadius.circular(2),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            width: 8,
-                            height: 2.5,
-                            decoration: BoxDecoration(
-                              color: _gold.withOpacity(0.3),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        "Sign in to continue your experience.",
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: _textSecondary,
-                          letterSpacing: 0.2,
-                          height: 1.5,
-                        ),
-                      ),
+                          ],
 
-                      const SizedBox(height: 48),
+                          _verticalGap(keyboardOpen: keyboardOpen, flex: 1),
 
-                      // ── Card ─────────────────────────────────
+                          // ── Card ─────────────────────────────────
                       Container(
-                        padding: const EdgeInsets.all(28),
+                        padding: const EdgeInsets.all(24),
                         decoration: BoxDecoration(
                           color: _surface,
                           borderRadius: BorderRadius.circular(20),
@@ -394,7 +420,7 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
 
-                            const SizedBox(height: 20),
+                            const SizedBox(height: 16),
 
                             _StaySignedInRow(
                               value: _staySignedIn,
@@ -407,7 +433,7 @@ class _LoginScreenState extends State<LoginScreen>
                               surfaceAlt: _surfaceAlt,
                             ),
 
-                            const SizedBox(height: 24),
+                            const SizedBox(height: 20),
 
                             // Sign In Button
                             SizedBox(
@@ -451,96 +477,44 @@ class _LoginScreenState extends State<LoginScreen>
                         ),
                       ),
 
-                      const SizedBox(height: 32),
+                          _verticalGap(keyboardOpen: keyboardOpen, flex: 2),
 
-                      // ── Sign Up link ─────────────────────────
-                      Center(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              "New to WatchTogether?  ",
-                              style: TextStyle(
-                                fontSize: 13.5,
-                                color: _textSecondary,
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                    builder: (_) => const SignupScreen()),
-                              ),
-                              child: Text(
-                                "Create account",
-                                style: TextStyle(
-                                  fontSize: 13.5,
-                                  color: _gold,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.2,
+                          Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  "New to WatchTogether?  ",
+                                  style: TextStyle(
+                                    fontSize: 13.5,
+                                    color: _textSecondary,
+                                  ),
                                 ),
-                              ),
+                                GestureDetector(
+                                  onTap: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const SignupScreen(),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    "Create account",
+                                    style: TextStyle(
+                                      fontSize: 13.5,
+                                      color: _gold,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      ),
+                          ),
 
-                      const SizedBox(height: 40),
-
-                      // ── Divider + Social hint (optional) ─────
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Divider(
-                              color: _border,
-                              thickness: 1,
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
-                            child: Text(
-                              "or continue with",
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                color: _textSecondary.withOpacity(0.6),
-                                letterSpacing: 0.4,
-                              ),
-                            ),
-                          ),
-                          Expanded(
-                            child: Divider(
-                              color: _border,
-                              thickness: 1,
-                            ),
-                          ),
+                          SizedBox(height: keyboardOpen ? 12 : 20),
                         ],
                       ),
-
-                      const SizedBox(height: 20),
-
-                      // Google / Apple social buttons
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _SocialButton(
-                              icon: Icons.g_mobiledata_rounded,
-                              label: "Google",
-                              onTap: () {},
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: _SocialButton(
-                              icon: Icons.apple_rounded,
-                              label: "Apple",
-                              onTap: () {},
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 24),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -613,14 +587,7 @@ class _StaySignedInRow extends StatelessWidget {
                   ),
                 ),
               ),
-              Text(
-                'Skip login next time',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: textSecondary,
-                  letterSpacing: 0.15,
-                ),
-              ),
+              
             ],
           ),
         ),
@@ -730,50 +697,6 @@ class _StyledTextFieldState extends State<_StyledTextField> {
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SocialButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _SocialButton({
-    // Remove 'const' keyword
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: 48,
-        decoration: BoxDecoration(
-          color: const Color(0xFF161A23),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF2A2F3E)),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: const Color(0xFF8A8FA0), size: 22),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 13.5,
-                color: Color(0xFF8A8FA0),
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0.3,
-              ),
-            ),
-          ],
         ),
       ),
     );

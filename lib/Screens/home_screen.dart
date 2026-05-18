@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'auth/auth_service.dart';
+import 'auth/login_screen.dart';
 import 'create_room_screen.dart';
 import 'join_room_screen.dart';
 import '../utils/theme_notifier.dart';
@@ -51,8 +53,118 @@ class _Palette {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  bool _isLoggingOut = false;
+
+  Future<void> _handleLogout() async {
+    if (_isLoggingOut) return;
+
+    final p = _Palette.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: p.surfaceAlt,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: p.border),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 32,
+                height: 2,
+                color: p.gold,
+                margin: const EdgeInsets.only(bottom: 14),
+              ),
+              Text(
+                'Sign out?',
+                style: TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: p.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'You will need to sign in again to use WatchTogether.',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: p.textSecondary,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 22),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: Text(
+                      'Cancel',
+                      style: TextStyle(color: p.textSecondary),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    style: TextButton.styleFrom(foregroundColor: p.gold),
+                    child: const Text(
+                      'Sign out',
+                      style: TextStyle(
+                        fontFamily: 'Georgia',
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isLoggingOut = true);
+
+    final error = await AuthService().signOut();
+
+    if (!mounted) return;
+    setState(() => _isLoggingOut = false);
+
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: p.surfaceAlt,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: p.border),
+          ),
+          content: Text(error, style: TextStyle(color: p.textPrimary)),
+        ),
+      );
+      return;
+    }
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -151,26 +263,27 @@ class HomeScreen extends StatelessWidget {
                                 ),
                               ],
                             ),
-                            // Theme toggle button
-                            Container(
-                              width: 38,
-                              height: 38,
-                              decoration: BoxDecoration(
-                                color: p.surfaceAlt,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: p.border),
-                              ),
-                              child: IconButton(
-                                padding: EdgeInsets.zero,
-                                icon: Icon(
-                                  isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-                                  color: p.textSecondary,
-                                  size: 18,
+                            Row(
+                              children: [
+                                _TopBarIconButton(
+                                  palette: p,
+                                  icon: isDark
+                                      ? Icons.light_mode_rounded
+                                      : Icons.dark_mode_rounded,
+                                  tooltip: isDark
+                                      ? 'Light mode'
+                                      : 'Dark mode',
+                                  onTap: themeNotifier.toggleTheme,
                                 ),
-                                onPressed: () {
-                                  themeNotifier.toggleTheme();
-                                },
-                              ),
+                                const SizedBox(width: 8),
+                                _TopBarIconButton(
+                                  palette: p,
+                                  icon: Icons.logout_rounded,
+                                  tooltip: 'Sign out',
+                                  onTap: _isLoggingOut ? null : _handleLogout,
+                                  isLoading: _isLoggingOut,
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -278,6 +391,59 @@ class HomeScreen extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TopBarIconButton extends StatelessWidget {
+  final _Palette palette;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+  final bool isLoading;
+
+  const _TopBarIconButton({
+    required this.palette,
+    required this.icon,
+    required this.tooltip,
+    this.onTap,
+    this.isLoading = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: palette.surfaceAlt,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: palette.border),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Center(
+              child: isLoading
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          palette.gold,
+                        ),
+                      ),
+                    )
+                  : Icon(icon, color: palette.textSecondary, size: 18),
+            ),
+          ),
+        ),
       ),
     );
   }
